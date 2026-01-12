@@ -5,6 +5,8 @@ from typing import Any, Dict
 import requests
 from requests.exceptions import RequestException, Timeout
 
+from exchange_client.errors import ExchangeRateLimitError
+
 from .errors import ExchangeAuthError, ExchangeHTTPError, ExchangeNetworkError
 from dataclasses import dataclass
 import time
@@ -40,9 +42,101 @@ class ExchangeClient:
             except RequestException as e:
                 error = ExchangeNetworkError(f"Network error calling {url}: {e}")
             else:
+                # Auth errors: do NOT retry
                 if response.status_code in (401, 403):
-                    raise ExchangeAuthError(f"Auth failed for {url} (HTTP {response.status_code})")
+                    raise ExchangeAuthError(
+                        status_code=response.status_code,
+                        message=f"Auth failed for {url}",
+                        method="GET",
+                        path=path,
+                        body=(response.text or "")[:300],
+                    )
 
+                # Success
+                if 200 <= response.status_code < 300:
+                    try:
+                        return response.json()
+                    except ValueError as e:
+                        raise ExchangeHTTPError(
+                            status_code=response.status_code,
+                            message="Invalid JSON in response",
+                            method="GET",
+                            path=path,
+                            body=(response.text or "")[:300],
+                        ) from e
+
+                # Rate limit: retryable, prefer Retry-After
+                if response.status_code == 429:
+                    retry_after = response.headers.get("Retry-After")
+                    parsed: float | None = None
+                    if retry_after is not None:
+                        try:
+                            parsed = float(retry_after)
+                        except ValueError:
+                            parsed = None
+
+                    error = ExchangeRateLimitError(
+                        retry_after=parsed,
+                        method="GET",
+                        path=path,
+                        body=(response.text or "")[:300],
+                    )
+
+                # 5xx: retryable
+                elif response.status_code >= 500:
+                    error = ExchangeHTTPError(
+                        status_code=response.status_code,
+                        message="Server error",
+                        method="GET",
+                        path=path,
+                        body=(response.text or "")[:300],
+                    )
+
+                # other 4xx: not retryable
+                else:
+                    msg = (response.text or "").strip()
+                    raise ExchangeHTTPError(
+                        status_code=response.status_code,
+                        message=msg[:300] if msg else "Unknown error",
+                        method="GET",
+                        path=path,
+                        body=(response.text or "")[:300],
+                    )
+
+            # retry logic
+            if attempts >= self.retry.max_retries:
+                raise error
+
+            # Prefer Retry-After for rate limits
+            if isinstance(error, ExchangeRateLimitError) and error.retry_after is not None:
+                time.sleep(error.retry_after)
+            else:
+                backoff = min(
+                    self.retry.backoff_base * (2**attempts),
+                    self.retry.backoff_max,
+                )
+                time.sleep(backoff)
+
+            attempts += 1
+
+        url = f"{self.base_url}{path}"
+
+        attempts = 0
+        while True:
+            try:
+                response = self.session.get(url, timeout=self.timeout)
+            except Timeout:
+                error = ExchangeNetworkError(f"Timeout calling {url}")
+            except RequestException as e:
+                error = ExchangeNetworkError(f"Network error calling {url}: {e}")
+            else:
+                if response.status_code in (401, 403):
+                    raise ExchangeAuthError(
+    status_code=response.status_code,
+    message=f"Auth failed for {url}",
+    method="GET",
+    path=path,
+)
                 if 200 <= response.status_code < 300:
                     try:
                         return response.json()
