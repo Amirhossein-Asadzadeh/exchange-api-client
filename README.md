@@ -22,6 +22,22 @@ This repo starts with a minimal client and grows into a reliable integration lay
 - Linting with `ruff`
 - GitHub Actions CI (lint + tests)
 
+## Reliability: Retries & Rate Limiting
+
+This client is built with production-grade reliability defaults:
+
+- **Retries on transient failures (5xx)** with exponential backoff (bounded).
+- **HTTP 429 (rate limit)** is handled explicitly:
+  - Honors `Retry-After` when provided by the server.
+  - Falls back to backoff when `Retry-After` is missing or invalid.
+- **Structured exceptions** to support clear error handling:
+  - `ExchangeAuthError` for 401/403 (no retries)
+  - `ExchangeRateLimitError` for 429 (retryable with `Retry-After`)
+  - `ExchangeHTTPError` for other HTTP failures
+  - `ExchangeNetworkError` for network/timeout issues
+
+All behaviors are covered by automated tests and executed in CI.
+
 ## Quick start
 
 ### Install (editable)
