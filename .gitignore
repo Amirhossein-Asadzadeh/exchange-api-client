@@ -1,16 +1,86 @@
-# Python cache
-__pycache__/
-*.pyc
+# =========================
 
-# Packaging artifacts
-*.egg-info/
-dist/
-build/
+# Python
+
+# =========================
+
+**pycache**/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# =========================
 
 # Virtual environments
+
+# =========================
+
 .venv/
 venv/
+ENV/
+env/
+
+# =========================
+
+# Packaging / build
+
+# =========================
+
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# =========================
+
+# Testing / coverage
+
+# =========================
+
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# =========================
+
+# IDE / Editor
+
+# =========================
+
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# =========================
 
 # OS
+
+# =========================
+
 .DS_Store
 Thumbs.db
+
+# =========================
+
+# Secrets / local config
+
+# =========================
+
+.env
+.env.*
+*.key
+*.pem
+
+# =========================
+
+# Logs
+
+# =========================
+
+logs/
+*.log
