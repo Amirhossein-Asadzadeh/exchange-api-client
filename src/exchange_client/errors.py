@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Any
 
 
 class ExchangeClientError(Exception):
@@ -40,11 +41,10 @@ class ExchangeRateLimitError(ExchangeHTTPError):
         message: str = "Rate limit exceeded",
         *,
         retry_after: float | None = None,
-        **kwargs,
-    ):
+        **kwargs: Any,
+    ) -> None:
         super().__init__(status_code=429, message=message, **kwargs)
         self.retry_after = retry_after
-
 
 class ExchangeNetworkError(ExchangeClientError):
     """Network/timeout/connection related errors."""
