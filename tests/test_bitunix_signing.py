@@ -8,7 +8,7 @@ def test_signing_is_deterministic():
 
     # ASCII-sorted => a then b
     query = c._canonical_query({"b": 2, "a": 1})
-    assert query == "a=1b=2"
+    assert query == "a1b2"
 
     body = c._compact_json({"x": 1, "y": 2})
     assert body == '{"x":1,"y":2}'

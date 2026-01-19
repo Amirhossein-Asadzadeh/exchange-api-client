@@ -192,10 +192,9 @@ class BitunixFuturesClient:
     def _canonical_query(self, params: dict[str, Any] | None) -> str:
         if not params:
             return ""
-        # Sort by ASCII order of key
         items = sorted(params.items(), key=lambda kv: kv[0])
-        # Docs examples show concatenation without '&' separators
-        return "".join(f"{k}={v}" for k, v in items)
+        # IMPORTANT: Bitunix expects key+value concatenation, no '=' and no '&'
+        return "".join(f"{k}{v}" for k, v in items)
 
     def _sha256_hex(self, s: str) -> str:
         return hashlib.sha256(s.encode("utf-8")).hexdigest()
