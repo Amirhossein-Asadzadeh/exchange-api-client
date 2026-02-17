@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import time
 import uuid
 from dataclasses import dataclass
@@ -14,6 +15,8 @@ from requests.exceptions import RequestException, Timeout
 
 from ..client import RetryConfig
 from ..errors import ExchangeAuthError, ExchangeHTTPError, ExchangeNetworkError, ExchangeRateLimitError
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -86,6 +89,7 @@ class BitunixFuturesClient:
         Uses HTTP Date header which is usually still reliable.
         """
         url = f"{self.config.base_url}{self.config.time_path}"
+        logger.debug("Attempting time sync via HTTP Date header from %s", url)
         try:
             resp = self.session.get(
                 url,
@@ -94,14 +98,18 @@ class BitunixFuturesClient:
             )
             date_hdr = resp.headers.get("Date")
             if not date_hdr:
+                logger.warning("Date header missing in response from %s", url)
                 return None
 
             dt = parsedate_to_datetime(date_hdr)
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
 
-            return int(dt.timestamp() * 1000)
-        except Exception:
+            server_ms = int(dt.timestamp() * 1000)
+            logger.debug("Server time from Date header: %d ms", server_ms)
+            return server_ms
+        except Exception as e:
+            logger.warning("Failed to obtain server time via Date header: %s", e)
             return None
 
     def sync_time_offset(self) -> None:
@@ -114,6 +122,7 @@ class BitunixFuturesClient:
         server_ms: int | None = None
 
         # 1) Primary: official time endpoint
+        logger.debug("Syncing server time via %s", self.config.time_path)
         try:
             data = self.get_time()
 
@@ -134,7 +143,8 @@ class BitunixFuturesClient:
                             server_ms = int(inner)
                         except (TypeError, ValueError):
                             server_ms = None
-        except Exception:
+        except Exception as e:
+            logger.warning("Primary time sync failed (%s); falling back to Date header", e)
             server_ms = None
 
         # 2) Fallback: Date header
@@ -153,6 +163,7 @@ class BitunixFuturesClient:
         local_ms = self._now_ms()
         self._time_offset_ms = server_ms - local_ms
         self._time_offset_last_sync_ms = local_ms
+        logger.info("Time sync complete: server=%d local=%d offset=%+d ms", server_ms, local_ms, self._time_offset_ms)
 
     def _ensure_time_synced(self) -> None:
         now = self._now_ms()
@@ -203,7 +214,12 @@ class BitunixFuturesClient:
         digest_input = f"{nonce}{timestamp}{self.api_key}{query_params}{body}"
         digest = self._sha256_hex(digest_input)
         sign_input = f"{digest}{self.secret_key}"
-        return self._sha256_hex(sign_input)
+        signature = self._sha256_hex(sign_input)
+        logger.debug(
+            "Signature generated: nonce=%s timestamp=%s query_params=%r body=%r signature=%s",
+            nonce, timestamp, query_params, body, signature,
+        )
+        return signature
 
     def _is_success_payload(self, data: dict[str, Any]) -> bool:
         return data.get("code") in (0, "0", None)
@@ -257,12 +273,15 @@ class BitunixFuturesClient:
                 else:
                     raise ValueError(f"Unsupported method: {method_u}")
             except Timeout as e:
+                logger.error("%s %s timed out (attempt %d/%d)", method_u, path, attempts + 1, self.retry.max_retries + 1)
                 err: Exception = ExchangeNetworkError(f"Timeout calling {url}", cause=e)
             except RequestException as e:
+                logger.error("%s %s network error (attempt %d/%d): %s", method_u, path, attempts + 1, self.retry.max_retries + 1, e)
                 err = ExchangeNetworkError(f"Network error calling {url}: {e}", cause=e)
             else:
                 # Auth failures
                 if resp.status_code in (401, 403):
+                    logger.error("%s %s auth error: HTTP %d", method_u, path, resp.status_code)
                     raise ExchangeAuthError(
                         status_code=resp.status_code,
                         message="Auth failed",
@@ -297,6 +316,10 @@ class BitunixFuturesClient:
                     if not self._is_success_payload(data):
                         # if looks like a timestamp issue, sync and retry once
                         if private and self._looks_like_timestamp_error(data) and attempts == 0:
+                            logger.warning(
+                                "%s %s timestamp error detected (code=%s msg=%r); re-syncing clock and retrying",
+                                method_u, path, data.get("code"), data.get("msg") or data.get("message"),
+                            )
                             self.sync_time_offset()
                             attempts += 1
                             continue
@@ -321,6 +344,10 @@ class BitunixFuturesClient:
                         except ValueError:
                             parsed = None
 
+                    logger.warning(
+                        "%s %s rate limited (attempt %d/%d); Retry-After=%s",
+                        method_u, path, attempts + 1, self.retry.max_retries + 1, parsed,
+                    )
                     err = ExchangeRateLimitError(
                         retry_after=parsed,
                         method=method_u,
@@ -330,6 +357,10 @@ class BitunixFuturesClient:
 
                 # Retryable server errors
                 elif resp.status_code >= 500:
+                    logger.warning(
+                        "%s %s server error HTTP %d (attempt %d/%d)",
+                        method_u, path, resp.status_code, attempts + 1, self.retry.max_retries + 1,
+                    )
                     err = ExchangeHTTPError(
                         status_code=resp.status_code,
                         message="Server error",
@@ -341,6 +372,7 @@ class BitunixFuturesClient:
                 # Non-retryable client errors
                 else:
                     msg = (resp.text or "").strip()
+                    logger.error("%s %s client error HTTP %d", method_u, path, resp.status_code)
                     raise ExchangeHTTPError(
                         status_code=resp.status_code,
                         message=msg[:300] if msg else "Unknown error",
@@ -354,9 +386,11 @@ class BitunixFuturesClient:
                 raise err
 
             if isinstance(err, ExchangeRateLimitError) and err.retry_after is not None:
+                logger.info("%s %s sleeping %.2fs (Retry-After)", method_u, path, err.retry_after)
                 time.sleep(err.retry_after)
             else:
                 backoff = min(self.retry.backoff_base * (2**attempts), self.retry.backoff_max)
+                logger.info("%s %s retrying in %.2fs (attempt %d/%d)", method_u, path, backoff, attempts + 1, self.retry.max_retries + 1)
                 time.sleep(backoff)
 
             attempts += 1

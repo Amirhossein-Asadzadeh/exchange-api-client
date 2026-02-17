@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any
 
@@ -8,6 +9,8 @@ import requests
 from requests.exceptions import RequestException, Timeout
 
 from .errors import ExchangeAuthError, ExchangeHTTPError, ExchangeNetworkError, ExchangeRateLimitError
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -40,12 +43,15 @@ class ExchangeClient:
             try:
                 response = self.session.get(url, timeout=self.timeout)
             except Timeout as e:
+                logger.error("GET %s timed out (attempt %d/%d)", path, attempts + 1, self.retry.max_retries + 1)
                 error: Exception = ExchangeNetworkError(f"Timeout calling {url}", cause=e)
             except RequestException as e:
+                logger.error("GET %s network error (attempt %d/%d): %s", path, attempts + 1, self.retry.max_retries + 1, e)
                 error = ExchangeNetworkError(f"Network error calling {url}: {e}", cause=e)
             else:
                 # Auth errors: do NOT retry
                 if response.status_code in (401, 403):
+                    logger.error("GET %s auth error: HTTP %d", path, response.status_code)
                     raise ExchangeAuthError(
                         status_code=response.status_code,
                         message=f"Auth failed for {url}",
@@ -88,6 +94,10 @@ class ExchangeClient:
                         except ValueError:
                             parsed = None
 
+                    logger.warning(
+                        "GET %s rate limited (attempt %d/%d); Retry-After=%s",
+                        path, attempts + 1, self.retry.max_retries + 1, parsed,
+                    )
                     error = ExchangeRateLimitError(
                         retry_after=parsed,
                         method="GET",
@@ -97,6 +107,10 @@ class ExchangeClient:
 
                 # 5xx: retryable
                 elif response.status_code >= 500:
+                    logger.warning(
+                        "GET %s server error HTTP %d (attempt %d/%d)",
+                        path, response.status_code, attempts + 1, self.retry.max_retries + 1,
+                    )
                     error = ExchangeHTTPError(
                         status_code=response.status_code,
                         message="Server error",
@@ -108,6 +122,7 @@ class ExchangeClient:
                 # other 4xx: not retryable
                 else:
                     msg = (response.text or "").strip()
+                    logger.error("GET %s client error HTTP %d", path, response.status_code)
                     raise ExchangeHTTPError(
                         status_code=response.status_code,
                         message=msg[:300] if msg else "Unknown error",
@@ -121,9 +136,11 @@ class ExchangeClient:
                 raise error
 
             if isinstance(error, ExchangeRateLimitError) and error.retry_after is not None:
+                logger.info("GET %s sleeping %.2fs (Retry-After)", path, error.retry_after)
                 time.sleep(error.retry_after)
             else:
                 backoff = min(self.retry.backoff_base * (2**attempts), self.retry.backoff_max)
+                logger.info("GET %s retrying in %.2fs (attempt %d/%d)", path, backoff, attempts + 1, self.retry.max_retries + 1)
                 time.sleep(backoff)
 
             attempts += 1
