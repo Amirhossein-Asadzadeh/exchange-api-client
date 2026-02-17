@@ -68,8 +68,7 @@ class BitunixFuturesClient:
     def _private_post(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
         return self._request("POST", path, json_body=body, private=True)
 
-    def place_order_demo(self, symbol: str, side: str, qty: str) -> dict[str, Any]:
-        # مسیر را بعداً با endpoint واقعی سفارش جایگزین می‌کنیم
+    def place_order(self, symbol: str, side: str, qty: str) -> dict[str, Any]:
         return self._private_post(
             "/api/v1/futures/order/place",
             {"symbol": symbol, "side": side, "qty": qty},
